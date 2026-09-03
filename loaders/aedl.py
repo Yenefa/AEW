@@ -69,6 +69,9 @@ def _tasks(repo: Path) -> List[Task]:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) < 4 or "Issue" not in cells[1]:
             continue
+        # Skip the header row (`| Task | Issue | ...`) and separator (`---`).
+        if cells[0].lower() in {"task", "tasks", "id", "任务"}:
+            continue
         m = _TASK_NAME_RE.match(cells[0])
         if not m:
             continue
@@ -76,6 +79,7 @@ def _tasks(repo: Path) -> List[Task]:
         tasks[tid] = Task(
             task_id=tid,
             status=_task_status(cells[3]),
+            description=cells[2] if len(cells) > 2 else "",
             assets=_assets_for_task(text, tid),
             dependencies=_deps_for_task(text, tid),
         )
@@ -171,11 +175,17 @@ def _decisions(repo: Path) -> List[Decision]:
     return decisions
 
 
-def load_project(repo: str | Path) -> ProjectSnapshot:
+def load_project(repo: str | Path, github: bool = False) -> ProjectSnapshot:
+    """Build the snapshot.
+
+    `github=False` (default) preserves v0's exact six-field contract. Pass
+    `github=True` to also project PRs / issues / CI / branches / releases from
+    the GitHub remote — empty when offline or not a GitHub repo.
+    """
     repo = Path(repo)
     tasks = _tasks(repo)
     ready, blocked = parallel_ready(tasks)
-    return ProjectSnapshot(
+    snap = ProjectSnapshot(
         project=_identity(repo),
         tasks=tasks,
         events=_events(repo),
@@ -183,3 +193,12 @@ def load_project(repo: str | Path) -> ProjectSnapshot:
         parallel_ready=ready,
         blocked_by_deps=blocked,
     )
+    if github:
+        from ..github import load_github_state
+        gs = load_github_state(repo)
+        snap.pull_requests = gs["pull_requests"]  # type: ignore[assignment]
+        snap.issues = gs["issues"]  # type: ignore[assignment]
+        snap.ci = gs["ci"]  # type: ignore[assignment]
+        snap.branches = gs["branches"]  # type: ignore[assignment]
+        snap.release = gs["release"]  # type: ignore[assignment]
+    return snap

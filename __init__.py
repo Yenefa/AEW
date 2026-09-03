@@ -1,18 +1,24 @@
-"""AEW v0 — Project Situational Awareness.
+"""AEW — Project Situational Awareness (v0) + Terminal Decision Layer (v1).
 
 v0 answers ONE question: "what is this project's actual current situation?"
-It reads the project's existing truth sources and projects a unified
-ProjectSnapshot. v0 does NOT execute, schedule, or enforce — that is AECP's
-job, later.
+v1 adds a long-running Terminal Agent that turns that situation into dispatchable
+task cards (difficulty-rated, model-routed) — without becoming an agent platform.
 """
 
 from .deps import parallel_ready
 from .model import (
+    Branch,
+    CIStatus,
     Decision,
     Event,
+    Issue,
     ProjectIdentity,
     ProjectSnapshot,
+    PullRequest,
+    ReleaseState,
+    ResultCard,
     Task,
+    TaskCard,
 )
 
 __all__ = [
@@ -22,4 +28,12 @@ __all__ = [
     "Decision",
     "ProjectSnapshot",
     "parallel_ready",
+    # v1
+    "PullRequest",
+    "Issue",
+    "CIStatus",
+    "Branch",
+    "ReleaseState",
+    "TaskCard",
+    "ResultCard",
 ]

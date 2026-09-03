@@ -52,6 +52,121 @@ class Decision:
     status: str = "unknown"        # current / superseded / proposed / rejected / unknown
 
 
+# --------------------------------------------------------------------------- #
+# v1 additions — GitHub-aware project state                                    #
+#                                                                              #
+# v0 projected the six repo-native fields. v1 widens the lens so the Terminal  #
+# Agent can also see PRs / issues / CI / branches / releases — the signals a   #
+# project manager actually triages. None of this changes v0's contract: these  #
+# are read-only projections, not control actions.                              #
+
+@dataclass
+class PullRequest:
+    number: int
+    title: str = ""
+    state: str = "open"            # open / closed / merged
+    draft: bool = False
+    review_status: str = ""        # REVIEW_REQUIRED / APPROVED / CHANGES_REQUESTED
+    head: str = ""
+    base: str = ""
+    author: str = ""
+    url: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class Issue:
+    number: int
+    title: str = ""
+    state: str = "open"            # open / closed
+    labels: List[str] = field(default_factory=list)
+    assignee: str = ""
+    url: str = ""
+
+
+@dataclass
+class CIStatus:
+    ref: str = ""
+    state: str = "unknown"         # success / failure / pending / unknown
+    conclusion: str = ""
+    url: str = ""
+
+
+@dataclass
+class Branch:
+    name: str = ""
+    ahead: int = 0
+    behind: int = 0
+
+
+@dataclass
+class ReleaseState:
+    latest_tag: str = ""
+    draft: bool = False
+    url: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# v1 additions — task dispatch primitives                                      #
+#                                                                              #
+# A TaskCard is the *handoff artifact*: any worker Agent (OpenCode, Claude     #
+# Code, Codex, an API agent) can pick it up without re-deriving context. A     #
+# ResultCard is what comes back.                                               #
+
+@dataclass
+class TaskCard:
+    task_id: str
+    title: str = ""
+    objective: str = ""
+    project: str = ""
+    current_stage: str = ""
+    constraints: List[str] = field(default_factory=list)
+    files: List[str] = field(default_factory=list)
+    difficulty: int = 0            # 0-10
+    recommended_model: str = ""
+    acceptance: List[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        L: List[str] = []
+        A = L.append
+        A(f"task_id: {self.task_id}")
+        A(f"title: {self.title}")
+        A("")
+        A(f"objective: {self.objective}")
+        A("")
+        A("context:")
+        A(f"  project: {self.project}")
+        A(f"  current_stage: {self.current_stage}")
+        A("")
+        if self.constraints:
+            A("constraints:")
+            for c in self.constraints:
+                A(f"  - {c}")
+            A("")
+        if self.files:
+            A("files:")
+            for f in self.files:
+                A(f"  - {f}")
+            A("")
+        A(f"difficulty: {self.difficulty}")
+        A(f"recommended_model: {self.recommended_model}")
+        A("")
+        if self.acceptance:
+            A("acceptance:")
+            for a in self.acceptance:
+                A(f"  - {a}")
+        return "\n".join(L)
+
+
+@dataclass
+class ResultCard:
+    task_id: str
+    status: str = "done"           # done / failed / partial
+    summary: str = ""
+    artifacts: List[str] = field(default_factory=list)
+    model: str = ""
+
+
 @dataclass
 class ProjectSnapshot:
     project: ProjectIdentity = field(default_factory=ProjectIdentity)
@@ -60,6 +175,12 @@ class ProjectSnapshot:
     decisions: List[Decision] = field(default_factory=list)
     parallel_ready: List[str] = field(default_factory=list)
     blocked_by_deps: List[str] = field(default_factory=list)
+    # v1 — GitHub-aware state (empty when not a GitHub repo / offline)
+    pull_requests: List[PullRequest] = field(default_factory=list)
+    issues: List[Issue] = field(default_factory=list)
+    ci: CIStatus = field(default_factory=CIStatus)
+    branches: List[Branch] = field(default_factory=list)
+    release: ReleaseState = field(default_factory=ReleaseState)
 
     def render(self) -> str:
         """Human-readable snapshot (the product)."""
@@ -92,6 +213,32 @@ class ProjectSnapshot:
         else:
             A("  (none)")
         A("")
+
+        if self.pull_requests:
+            A("Pull Requests")
+            for pr in self.pull_requests:
+                rs = f" [{pr.review_status}]" if pr.review_status else ""
+                draft = " (draft)" if pr.draft else ""
+                A(f"  #{pr.number} {pr.title}{rs}{draft}")
+            A("")
+
+        if self.issues:
+            A("Issues")
+            for i in self.issues:
+                labels = f" [{', '.join(i.labels)}]" if i.labels else ""
+                A(f"  #{i.number} {i.title}{labels}")
+            A("")
+
+        if self.ci.ref or self.ci.state != "unknown":
+            A("CI Status")
+            A(f"  {self.ci.state}{f' — {self.ci.conclusion}' if self.ci.conclusion else ''}")
+            A("")
+
+        if self.release.latest_tag:
+            draft = " (draft)" if self.release.draft else ""
+            A("Release")
+            A(f"  {self.release.latest_tag}{draft}")
+            A("")
 
         A("Active Decisions")
         active = [d for d in self.decisions if d.status == "current"]

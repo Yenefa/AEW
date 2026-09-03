@@ -34,6 +34,8 @@ class TestParallelReady(unittest.TestCase):
         self.assertEqual(blocked, [])
 
 
+@unittest.skipUnless(AEDL.exists(), "requires the author's real AEDL repo at "
+                   "C:/Users/fuker/Desktop/workspace/aedl")
 class TestAedlSnapshot(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

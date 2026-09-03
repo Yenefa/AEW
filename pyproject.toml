@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aew"
+version = "1.0.0"
+description = "AEW — Project Situational Awareness (v0) + Terminal Decision Layer (v1)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "AEW contributors" }]
+dependencies = []
+
+[project.scripts]
+aew = "aew.cli:main"
+
+[tool.setuptools]
+packages = ["aew", "aew.loaders", "aew.tests"]
+
+[tool.setuptools.package-data]
+aew = ["examples/**/*.md"]
