@@ -6,6 +6,7 @@ acceptance contract on the bundled `examples/sample_project` fixture, plus the
 v1 GitHub-aware fields (empty when offline).
 """
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,40 @@ class TestSampleLoader(unittest.TestCase):
         self.assertEqual(self.snap.pull_requests, [])
         self.assertEqual(self.snap.issues, [])
         self.assertEqual(self.snap.ci.state, "unknown")
+
+
+class TestConventionDiscovery(unittest.TestCase):
+    """Discovery is convention-driven, not hard-coded to AEDL's exact paths."""
+
+    def test_design_decisions_from_claude_md(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text("# Demo\n\n一个演示项目\n", encoding="utf-8")
+            (root / "CLAUDE.md").write_text(
+                "# Demo\n\n## 设计决策\n\n- 决策一\n- 决策二\n\n## 其他\n\n- 不是决策\n",
+                encoding="utf-8",
+            )
+            snap = load_project(root)
+            texts = [d.text for d in snap.decisions]
+            self.assertIn("决策一", texts)
+            self.assertIn("决策二", texts)
+            self.assertNotIn("不是决策", texts)
+            self.assertEqual(snap.decisions[0].status, "current")
+
+    def test_task_discovery_by_convention_not_filename(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "TODO.md").write_text(
+                "| Task | Issue | Description | Status |\n"
+                "| --- | --- | --- | --- |\n"
+                "| A1 | Issue #1 | do x | OPEN |\n",
+                encoding="utf-8",
+            )
+            snap = load_project(root)
+            self.assertEqual({t.task_id for t in snap.tasks}, {"A1"})
 
 
 if __name__ == "__main__":

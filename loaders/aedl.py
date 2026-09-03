@@ -1,14 +1,17 @@
-"""AEDL repo-native loader — read the project's existing truth sources.
+"""Repo-native loader — read the project's existing truth sources.
 
 Repo-native first: AEW does NOT ask the project to re-file its state into AEW.
 It stands ON TOP of the existing project and resolves scattered sources into a
 unified ProjectSnapshot.
 
-Sources (all already exist in AEDL):
-    README.md                       -> project identity
-    docs/WAVE4_TASKS_20260901.md    -> tasks (status + owned paths + deps)
-    docs/compliance/DECISIONS.md    -> decisions (ADR + status)
-    git log                         -> recent activity
+Truth sources are discovered by convention, not hard-coded to AEDL's exact
+paths (the original v0 coupled discovery to `docs/WAVE4_TASKS_20260901.md` and
+`docs/compliance/DECISIONS.md`, which read as empty on any non-AEDL project):
+
+    README.md / CLAUDE.md / AGENTS.md           -> project identity
+    docs/** + root: *TASK* / TODO / PLAN / ...  -> tasks (status + paths + deps)
+    docs/** + root: *DECISION* / ADR / CLAUDE   -> decisions (ADR + design)
+    git log                                     -> recent activity
 """
 
 from __future__ import annotations
@@ -33,9 +36,13 @@ def _section(text: str, start: int, boundary: str = r"\n## ") -> str:
 
 
 def _identity(repo: Path) -> ProjectIdentity:
-    readme = _read_text(repo / "README.md")
+    text = ""
+    for fname in ("README.md", "CLAUDE.md", "AGENTS.md"):
+        text = _read_text(repo / fname)
+        if text.strip():
+            break
     name, tagline, north_star = "", "", ""
-    for line in readme.splitlines():
+    for line in text.splitlines():
         if line.startswith("# ") and not name:
             name = line[2:].strip()
         if "**" in line and not tagline and line.strip().startswith("**"):
@@ -58,10 +65,27 @@ def _task_status(cell: str) -> str:
     return re.split(r"[；;]", cell.replace("`", ""))[0].strip().upper()
 
 
-def _tasks(repo: Path) -> List[Task]:
-    text = _read_text(repo / "docs" / "WAVE4_TASKS_20260901.md")
-    tasks: dict[str, Task] = {}
+_TASK_FILE_PAT = re.compile(
+    r"(task|tasks|todo|plan|backlog|roadmap|任务|待办|计划|清单)", re.IGNORECASE
+)
 
+
+def _task_files(repo: Path) -> List[Path]:
+    """Discover task-bearing markdown by name convention (not AEDL's path)."""
+    found: dict[str, Path] = {}
+    docs = repo / "docs"
+    roots: List[Path] = [docs] if docs.is_dir() else []
+    roots.append(repo)
+    for base in roots:
+        # docs subtree recursive; repo root top-level only (avoid data/, venv/).
+        it = base.rglob("*.md") if base == docs else base.glob("*.md")
+        for p in it:
+            if p.is_file() and _TASK_FILE_PAT.search(p.name):
+                found[p.as_posix()] = p
+    return sorted(found.values())
+
+
+def _parse_tasks(text: str, tasks: dict[str, Task]) -> None:
     # 1. tracking table: rows with an Issue # carry the authoritative status
     for line in text.splitlines():
         if not line.strip().startswith("|"):
@@ -95,6 +119,11 @@ def _tasks(repo: Path) -> List[Task]:
                 dependencies=_deps_for_task(text, tid),
             )
 
+
+def _tasks(repo: Path) -> List[Task]:
+    tasks: dict[str, Task] = {}
+    for f in _task_files(repo):
+        _parse_tasks(_read_text(f), tasks)
     return list(tasks.values())
 
 
@@ -155,10 +184,30 @@ def _normalize_decision_status(raw: str) -> str:
     return "unknown"
 
 
-def _decisions(repo: Path) -> List[Decision]:
-    """Parse ADR headings AND their `状态：...` line (P2)."""
-    text = _read_text(repo / "docs" / "compliance" / "DECISIONS.md")
-    decisions: List[Decision] = []
+_DECISION_FILE_PAT = re.compile(r"(decision|adr|决策|决定)", re.IGNORECASE)
+
+
+def _decision_files(repo: Path) -> List[Path]:
+    """Discover decision/ADR markdown by convention, plus CLAUDE/AGENTS context."""
+    found: dict[str, Path] = {}
+    docs = repo / "docs"
+    roots: List[Path] = [docs] if docs.is_dir() else []
+    roots.append(repo)
+    for base in roots:
+        it = base.rglob("*.md") if base == docs else base.glob("*.md")
+        for p in it:
+            if p.is_file() and _DECISION_FILE_PAT.search(p.name):
+                found[p.as_posix()] = p
+    # CLAUDE.md / AGENTS.md carry a "设计决策" section for modern AI projects.
+    for fname in ("CLAUDE.md", "AGENTS.md"):
+        p = repo / fname
+        if p.is_file():
+            found[p.as_posix()] = p
+    return sorted(found.values())
+
+
+def _parse_adr_decisions(text: str, decisions: List[Decision]) -> None:
+    """Parse `## ADR-* — title` headings AND their `状态：...` line."""
     for m in re.finditer(r"^## (ADR-\d+)\s*[—–-]\s*(.+)", text, re.MULTILINE):
         section = _section(text, m.start())
         sm = re.search(r"状态[：:]\s*\**(.+?)\**\s*[（(]", section)
@@ -172,6 +221,39 @@ def _decisions(repo: Path) -> List[Decision]:
                 status=_normalize_decision_status(raw),
             )
         )
+
+
+_DESIGN_SECTION_RE = re.compile(
+    r"^#{1,4}\s*(设计决策|设计决定|设计考量|Design Decisions?)\s*$", re.MULTILINE
+)
+
+
+def _parse_design_decisions(text: str, decisions: List[Decision]) -> None:
+    """Parse a `## 设计决策` bullet list (CLAUDE.md / AGENTS.md) as decisions."""
+    m = _DESIGN_SECTION_RE.search(text)
+    if not m:
+        return
+    section = _section(text, m.start())
+    idx = len(decisions) + 1
+    for line in section.splitlines():
+        s = line.strip()
+        if s.startswith("- "):
+            item = s[2:].strip()
+        elif re.match(r"^\d+\.\s", s):
+            item = re.sub(r"^\d+\.\s*", "", s).strip()
+        else:
+            continue
+        if item:
+            decisions.append(Decision(decision_id=f"DD-{idx:03d}", text=item, status="current"))
+            idx += 1
+
+
+def _decisions(repo: Path) -> List[Decision]:
+    decisions: List[Decision] = []
+    for f in _decision_files(repo):
+        text = _read_text(f)
+        _parse_adr_decisions(text, decisions)
+        _parse_design_decisions(text, decisions)
     return decisions
 
 
