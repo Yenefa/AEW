@@ -28,6 +28,39 @@ def _github_flag(argv):
     return "--github" in argv
 
 
+def _run_hub(argv) -> int:
+    """Start the Hub server for a repo: python -m aew.cli hub <repo> [options]."""
+    import os
+
+    from .hub.api import serve
+    from .hub.coordinator import Coordinator
+    from .hub.store import Store
+
+    if not argv:
+        print("usage: python -m aew.cli hub <repo-path> "
+              "[--host 0.0.0.0] [--port 8765] [--db path]")
+        return 2
+    repo = Path(argv[0])
+    host, port, db = "0.0.0.0", 8765, None
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--host" and i + 1 < len(argv):
+            host, i = argv[i + 1], i + 2
+        elif argv[i] == "--port" and i + 1 < len(argv):
+            port, i = int(argv[i + 1]), i + 2
+        elif argv[i] == "--db" and i + 1 < len(argv):
+            db, i = argv[i + 1], i + 2
+        else:
+            i += 1
+    db_path = Path(db) if db else (repo / ".aew" / "hub.sqlite3")
+    token = os.environ.get("AEW_HUB_TOKEN", "")
+    store = Store(db_path)
+    coord = Coordinator(store, repo, github=True)
+    print(f"initial refresh: {coord.refresh()}")
+    serve(coord, host=host, port=port, token=token)
+    return 0
+
+
 def main(argv=None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:

@@ -4,6 +4,7 @@
 >
 > - **v0 · Project Brain（冻结）**：从项目现有真源恢复身份、任务、事件、决策、资产、依赖，生成 Project Snapshot。**只读，不执行。**
 > - **v1 · Terminal Decision Layer（本仓库新增）**：一个长期运行的 Terminal Agent，把 Snapshot 转成**难度评级 + 模型路由 + 任务卡**，分发给任意 Worker Agent。**不直接实施工程变更；仅负责决策与显式授权后的 Worker 分发。**
+> - **v2 · AEW Hub（团队协调层，MVP）**：一个跑在服务器上的 SQLite+HTTP 服务，让**两个人**看到同一个团队任务看板、原子领取任务、再各自本地拆卡分发。
 
 > 一句话：**让 AI 工程团队拥有一个不会失忆的项目负责人。**
 
@@ -200,12 +201,79 @@ aew/
 ├── router.py       # v1 模型路由 + 成本台账
 ├── dispatch.py     # v1 任务卡 → Worker Agent 命令
 ├── agent.py        # v1 长期 Terminal Agent REPL
-├── cli.py          # python -m aew.cli [agent|plan|dispatch] <repo>
+├── hub_client.py   # v2 Local AEW ↔ Hub 客户端（读 AEW_HUB_* 环境变量）
+├── hub/            # v2 Hub 服务端（SQLite + HTTP，纯 stdlib）
+│   ├── models.py   #   TeamTask + 稳定状态 READY/CLAIMED/BLOCKED/DONE
+│   ├── store.py    #   三表 SQLite + 原子 claim
+│   ├── sync.py     #   稳定 ID 派生 + refresh（不覆盖 CLAIMED/DONE）
+│   ├── coordinator.py  # store + sync 胶水
+│   └── api.py      #   8 endpoint http.server + Bearer 认证
+├── cli.py          # python -m aew.cli [agent|plan|dispatch|hub] <repo>
 ├── loaders/aedl.py # AEDL repo-native 读取器
 ├── examples/
 │   └── sample_project/   # 离线可跑的最小演示项目
-└── tests/          # 58 用例（含 v0 DAG + v1 全部新组件）
+└── tests/          # 95 用例（v0 DAG + v1 全组件 + v2 Hub/store/api/e2e）
 ```
+
+---
+
+## v2 — AEW Hub（团队协调层，MVP）
+
+两个人各自在不同电脑启动 Local AEW，看到同一个团队任务看板；一人领取任务，另一人立刻看到；领取后再各自本地拆卡、选模型、发给 Worker。
+
+### 最小架构与三个真源
+
+```
+GitHub / AEDL（仓库事实真源）
+        │
+        ▼
+AEW Hub Server（SQLite + HTTP）—— 只存团队协调状态（谁领了哪个任务）
+        │ HTTP
+   ┌────┴────┐
+   ▼         ▼
+ 你的 AEW   朋友 AEW      （本地 planner / router / dispatch 不变）
+```
+
+| 数据                                    | 真源               |
+| --------------------------------------- | ------------------ |
+| commit / PR / CI / Issue / branch       | GitHub             |
+| 团队任务 owner / claim / shared state    | AEW Hub SQLite     |
+| 个人 focus / 本地子任务 / worker 状态     | 各自 Local `.aew/` |
+
+### 运行
+
+```bash
+# 服务器（一台机器，走 Tailscale 私网，8765 不裸暴露公网）
+export AEW_HUB_TOKEN=<random-long-token>
+python -m aew.cli hub <repo-path> --host 0.0.0.0 --port 8765
+
+# 两台电脑各自的 Local AEW
+export AEW_HUB_URL=http://100.x.x.x:8765
+export AEW_HUB_TOKEN=<同一个 token>
+export AEW_USER=Maple      # 另一台是 Ryan
+python -m aew.cli agent <repo-path> --github
+```
+
+REPL 新增命令：
+
+```
+team                团队任务看板（READY / CLAIMED / BLOCKED / DONE）
+claim <id>          领取任务（原子，两人抢只有一人成功）
+mine                我领取的任务
+dispatch-team <n>   把我领取的任务转成 TaskCard 分发（dry-run）
+run-team <n> [tgt]  真正分发
+release <id>        释放任务
+done <id>           标记完成
+sync                让 Hub 从仓库刷新
+```
+
+### 关键约束
+
+- **稳定任务 ID**：`AEDL-W4A` / `GH-PR-42` / `GH-ISSUE-37` / `GH-CI-<ref>`，刷新 100 次不重复、不复制。
+- **原子 claim**：`UPDATE ... WHERE status='READY'` + `rowcount`，两人同时抢同一任务必有一人失败。
+- **refresh 不覆盖**：Hub 刷新重新发现任务时，绝不覆盖已 CLAIMED / DONE 的 owner 与状态。
+
+Hub API 只 8 个 endpoint（`/health` `/snapshot` `/tasks` `/tasks/mine` `/refresh` `/tasks/{id}/claim|release|done`），SQLite 三张表，共享 Bearer token 认证。
 
 ---
 

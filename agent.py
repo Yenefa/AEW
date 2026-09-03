@@ -20,6 +20,7 @@ from .model import ProjectSnapshot, TaskCard
 from .planner import PlannedTask, difficulty_band, plan
 from .router import load_model_pool, route_card
 from .state import ProjectMemory
+from .hub_client import HubClient
 
 TERMINAL_STATES = {"DONE", "CLOSED"}
 
@@ -45,6 +46,9 @@ class TerminalAgent:
         self.snapshot: ProjectSnapshot = load_project(self.repo, github=github)
         self.plan: List[PlannedTask] = plan(self.snapshot, self.memory.load_focus())
         self._assign_models()
+        self.hub: Optional[HubClient] = HubClient.from_env()
+        self.user = self.hub.user if self.hub else ""
+        self.team_cards: List[TaskCard] = []
 
     # -- setup -------------------------------------------------------------- #
 
@@ -157,6 +161,30 @@ class TerminalAgent:
         if c in ("recover", "r", "memory"):
             return "Memory: " + self.memory.recovery_summary()
 
+        if c in ("team",):
+            return self._team()
+
+        if c in ("mine",):
+            return self._mine()
+
+        if c in ("claim",):
+            return self._claim(args)
+
+        if c in ("release",):
+            return self._release(args)
+
+        if c in ("done", "complete"):
+            return self._done(args)
+
+        if c in ("sync",):
+            return self._sync()
+
+        if c in ("dispatch-team", "dt", "dm"):
+            return self._dispatch_team(args, dry_run=True)
+
+        if c in ("run-team", "rt", "rm"):
+            return self._dispatch_team(args, dry_run=False)
+
         if c in ("agents", "who"):
             found = available_agents()
             return "Worker agents: " + (", ".join(found) if found else "(none installed)")
@@ -230,6 +258,129 @@ class TerminalAgent:
         }
         self.memory.save_tasks(tasks)
 
+    # -- hub commands ------------------------------------------------------ #
+
+    def _hub_required(self) -> Optional[HubClient]:
+        return self.hub
+
+    def _hub_help(self) -> str:
+        return "no hub configured — set AEW_HUB_URL (plus AEW_HUB_TOKEN / AEW_USER)"
+
+    def _team(self) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        try:
+            tasks = hub.tasks()
+        except Exception as e:
+            return f"hub error: {e}"
+        groups = {"READY": [], "CLAIMED": [], "BLOCKED": [], "DONE": []}
+        for t in tasks:
+            groups.setdefault(t.get("status", "READY"), []).append(t)
+        L = [f"AEW Hub · {hub.url}"]
+        if not tasks:
+            L.append("  (no tasks — try 'sync')")
+        for st in ("READY", "CLAIMED", "BLOCKED", "DONE"):
+            items = groups.get(st, [])
+            L.append(f"\n{st}" + (f" ({len(items)})" if items else ""))
+            for t in items:
+                owner = f"  · {t.get('owner')}" if t.get("owner") else ""
+                L.append(f"  {t.get('task_id', '?'):<14} {t.get('title', '')}{owner}")
+        return "\n".join(L)
+
+    def _mine(self) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        try:
+            self.team_cards = hub.my_cards(self.user)
+        except Exception as e:
+            return f"hub error: {e}"
+        if not self.team_cards:
+            return "you have no claimed tasks"
+        L = ["Your claimed tasks:"]
+        for i, c in enumerate(self.team_cards, 1):
+            L.append(f"  {i}. {c.task_id}")
+            L.append(f"     difficulty {c.difficulty}/10 · recommended model: {c.recommended_model or '?'}")
+        L.append("dispatch with: dispatch-team <n> [target]")
+        return "\n".join(L)
+
+    def _claim(self, args: List[str]) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        if not args:
+            return "usage: claim <task_id>"
+        try:
+            r = hub.claim(args[0], self.user)
+        except Exception as e:
+            return f"hub error: {e}"
+        if r.get("ok"):
+            return f"CLAIMED ✓\n{r.get('task_id')} → {r.get('owner')} [{r.get('status')}]"
+        return f"CLAIM FAILED — {r.get('message') or 'unknown'}"
+
+    def _release(self, args: List[str]) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        if not args:
+            return "usage: release <task_id>"
+        try:
+            r = hub.release(args[0], self.user)
+        except Exception as e:
+            return f"hub error: {e}"
+        if r.get("ok"):
+            return f"RELEASED ✓\n{r.get('task_id')} → [{r.get('status')}]"
+        return f"RELEASE FAILED — {r.get('message') or 'unknown'}"
+
+    def _done(self, args: List[str]) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        if not args:
+            return "usage: done <task_id>"
+        try:
+            r = hub.done(args[0], self.user)
+        except Exception as e:
+            return f"hub error: {e}"
+        if r.get("ok"):
+            return f"DONE ✓\n{r.get('task_id')} → [{r.get('status')}]"
+        return f"DONE FAILED — {r.get('message') or 'unknown'}"
+
+    def _sync(self) -> str:
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        try:
+            r = hub.refresh()
+        except Exception as e:
+            return f"hub error: {e}"
+        return (f"synced: {r.get('upserted', 0)} new/updated · "
+                f"{r.get('total', 0)} team tasks · project {r.get('project', '?')}")
+
+    def _dispatch_team(self, args: List[str], dry_run: bool) -> str:
+        if not self.team_cards:
+            return "no claimed tasks — run 'mine' first"
+        verb = "dispatch-team" if dry_run else "run-team"
+        if not args:
+            return f"usage: {verb} <n> [target]"
+        try:
+            n = int(args[0])
+        except ValueError:
+            return f"usage: {verb} <n> [target]"
+        if not 1 <= n <= len(self.team_cards):
+            return f"no team task #{n} (have {len(self.team_cards)})"
+        target = args[1] if len(args) > 1 else self._default_target()
+        card = self.team_cards[n - 1]
+        if not card.recommended_model:
+            route_card(card, self.pool)
+        result = dispatch(card, target, self.repo, dry_run=dry_run)
+        self._remember_dispatch(card, target)
+        header = f"Dispatching team task '{card.title}' → [{target}]"
+        if dry_run:
+            return f"{header} (dry-run):\n  {result}"
+        return f"{header}:\n{result}"
+
     def _help(self) -> str:
         return (
             "commands:\n"
@@ -242,6 +393,14 @@ class TerminalAgent:
             "  recover              what the last session left behind\n"
             "  agents               worker agents installed on this machine\n"
             "  models               the model pool\n"
+            "  team                 team task board (from the hub)\n"
+            "  mine                 your claimed tasks\n"
+            "  claim <id>           claim a team task\n"
+            "  release <id>         release a claimed task\n"
+            "  done <id>            mark a claimed task DONE\n"
+            "  sync                 refresh the hub from the repo\n"
+            "  dispatch-team <n>    dispatch a claimed team task (dry-run)\n"
+            "  run-team <n> [tgt]   actually dispatch a claimed team task\n"
             "  quit                 save memory and exit"
         )
 

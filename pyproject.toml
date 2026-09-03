@@ -16,7 +16,7 @@ dependencies = []
 aew = "aew.cli:main"
 
 [tool.setuptools]
-packages = ["aew", "aew.loaders", "aew.tests"]
+packages = ["aew", "aew.loaders", "aew.hub", "aew.tests"]
 
 [tool.setuptools.package-data]
 aew = ["examples/**/*.md"]
