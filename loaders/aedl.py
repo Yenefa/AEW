@@ -85,39 +85,123 @@ def _task_files(repo: Path) -> List[Path]:
     return sorted(found.values())
 
 
+_TASK_HEADING_RE = re.compile(r"^## (TASK-[A-Za-z0-9_-]+)(?:\s*[：:]\s*(.*))?$", re.MULTILINE)
+_STAR_RE = re.compile(r"[★⭐]")
+
+
+def _description_from_section(section: str) -> str:
+    """First prose line of a task section (for headings without a '：title')."""
+    for line in section.splitlines()[1:]:
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith(("#", "-", "|")) or any(
+            s.startswith(k) for k in ("领地", "难度", "背景", "待办", "验收", "禁止")
+        ):
+            continue
+        return s
+    return ""
+
+
+def _clean_title(heading: str) -> str:
+    """Strip trailing stars and '文本 AI'/'多模态 AI' owner-hints from a heading."""
+    s = heading.strip()
+    s = re.sub(r"(?:文本|多模态)\s*AI.*$", "", s)
+    s = re.sub(r"[★⭐👁\s]+$", "", s)
+    return s.strip()
+
+
+def _declared_difficulty(section: str, heading: str):
+    """Extract an explicit 0-10 difficulty from '难度：★★' or a trailing '⭐'.
+
+    Returns None when the project did not declare one. Star count × 2, capped 10.
+    """
+    m = re.search(r"难度\s*[：:]\s*([★⭐]+)", section)
+    if m:
+        return min(10, len(m.group(1)) * 2)
+    m = re.search(r"([★⭐]+)\s*$", heading)
+    if m:
+        return min(10, len(m.group(1)) * 2)
+    return None
+
+
 def _parse_tasks(text: str, tasks: dict[str, Task]) -> None:
-    # 1. tracking table: rows with an Issue # carry the authoritative status
-    for line in text.splitlines():
-        if not line.strip().startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 4 or "Issue" not in cells[1]:
-            continue
-        # Skip the header row (`| Task | Issue | ...`) and separator (`---`).
-        if cells[0].lower() in {"task", "tasks", "id", "任务"}:
-            continue
-        m = _TASK_NAME_RE.match(cells[0])
-        if not m:
-            continue
-        tid = re.sub(r"^TASK-", "", m.group(1)).replace(" ", "-")
+    # 1. `## TASK-*` headings carry description / difficulty / assets / deps.
+    for m in _TASK_HEADING_RE.finditer(text):
+        tid = re.sub(r"^TASK-", "", m.group(1))
+        heading = (m.group(2) or "").strip()
+        section = _section(text, m.start())
         tasks[tid] = Task(
             task_id=tid,
-            status=_task_status(cells[3]),
-            description=cells[2] if len(cells) > 2 else "",
+            status="OPEN",
+            description=_clean_title(heading) if heading else _description_from_section(section),
+            difficulty=_declared_difficulty(section, heading),
             assets=_assets_for_task(text, tid),
             dependencies=_deps_for_task(text, tid),
         )
 
-    # 2. `## TASK-*` section headers discover any task the table missed
-    for m in re.finditer(r"^## (TASK-[A-Za-z0-9_-]+)", text, re.MULTILINE):
-        tid = re.sub(r"^TASK-", "", m.group(1))
-        if tid not in tasks:
-            tasks[tid] = Task(
-                task_id=tid,
-                status="OPEN",
-                assets=_assets_for_task(text, tid),
-                dependencies=_deps_for_task(text, tid),
-            )
+    # 2. tracking table: authoritative status + owner, by column NAME not position.
+    _apply_tracking_table(text, tasks)
+
+
+def _apply_tracking_table(text: str, tasks: dict[str, Task]) -> None:
+    """Apply status/owner from a tracking table, keyed by column header names.
+
+    AEDL's WAVE4 table is `| 任务 | GitHub | 真人 Owner | 当前状态 |`. The old
+    parser assumed column 2 = description and column 3 = status, which silently
+    stuffed the Owner into description. This locates status/owner/task columns
+    from the header, so Owner is never mistaken for description.
+    """
+    lines = text.splitlines()
+    header = None
+    header_idx = None
+    for i, line in enumerate(lines):
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        joined = " ".join(cells).lower()
+        if ("状态" in joined or "status" in joined) and (
+            "任务" in joined or "task" in joined or "issue" in joined or "github" in joined
+        ):
+            header = cells
+            header_idx = i
+            break
+    if header is None:
+        return
+
+    def col(hint: str):
+        for j, c in enumerate(header):
+            if hint in c.lower():
+                return j
+        return None
+
+    status_col = col("状态") or col("status")
+    owner_col = col("owner")
+    desc_col = col("description") or col("描述") or col("desc")
+    task_col = col("任务") or col("task") or 0
+
+    for line in lines[header_idx + 1:]:
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not cells or not cells[0] or set("".join(cells)) <= {"-", ":", "|"}:
+            continue
+        m = _TASK_NAME_RE.match(cells[task_col])
+        if not m:
+            continue
+        tid = re.sub(r"^TASK-", "", m.group(1)).replace(" ", "-")
+        task = tasks.get(tid)
+        if task is None:
+            task = Task(task_id=tid, status="OPEN")
+            tasks[tid] = task
+        if status_col is not None and status_col < len(cells):
+            task.status = _task_status(cells[status_col])
+        if owner_col is not None and owner_col < len(cells):
+            task.owner = cells[owner_col].strip("`")
+        if desc_col is not None and desc_col < len(cells):
+            val = cells[desc_col].strip("`")
+            if val and not task.description:
+                task.description = val
 
 
 def _tasks(repo: Path) -> List[Task]:
@@ -127,23 +211,44 @@ def _tasks(repo: Path) -> List[Task]:
     return list(tasks.values())
 
 
+def _looks_like_path(s: str) -> bool:
+    """Inline backtick spans can be function names or prose, not just paths.
+    Keep only spans that look like a path (contain '/' or a file extension)."""
+    return ("/" in s) or ("." in s)
+
+
 def _assets_for_task(text: str, task_id: str) -> List[str]:
+    """Extract owned paths from a task section (single-line and multi-line forms).
+
+    Single-line: "- 领地（可写）：`src/...`、`docs/...`"
+    Multi-line:  "### 领地（可写）" followed by "- `path`" bullets.
+    """
     m = re.search(rf"## TASK-{re.escape(task_id)}\b", text)
     if not m:
         return []
     section = _section(text, m.start())
-    territory = re.search(r"领地[（(]?可写[)）]?：?([^\n]+)", section)
-    if not territory:
-        return []
-    return re.findall(r"`([^`]+)`", territory.group(1))
+    # single-line territory (`- 领地：` / `- 领地（可写）：`)
+    territory = re.search(r"领地(?:[（(]?可写[)）]?)?\s*[：:]\s*([^\n]+)", section)
+    if territory:
+        paths = [p for p in re.findall(r"`([^`]+)`", territory.group(1)) if _looks_like_path(p)]
+        if paths:
+            return paths
+    # multi-line `### 领地（可写）` bullets
+    paths: List[str] = []
+    in_territory = False
+    for line in section.splitlines():
+        if "领地" in line:
+            in_territory = True
+            continue
+        if in_territory:
+            if re.match(r"^\s*#{1,4}\s", line):
+                break
+            paths.extend(p for p in re.findall(r"`([^`]+)`", line) if _looks_like_path(p))
+    return paths
 
 
 def _deps_for_task(text: str, task_id: str) -> List[str]:
-    """Parse declared dependencies from a task section (empty if none declared).
-
-    AEDL's W4 tasks declare no machine-readable task-to-task dependencies, so
-    this returns [] today — but the mechanism reads whatever is declared.
-    """
+    """Parse declared dependencies from a task section (empty if none declared)."""
     m = re.search(rf"## TASK-{re.escape(task_id)}\b", text)
     if not m:
         return []

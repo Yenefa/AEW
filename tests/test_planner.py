@@ -113,6 +113,25 @@ class TestPlanner(unittest.TestCase):
         ids = [p.card.task_id for p in plan(snap)]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_stable_task_ids(self):
+        # P1: no PROJECT-YYYYMMDD-NNN; stable source-derived IDs instead.
+        snap = _snapshot(pull_requests=[PullRequest(number=42, title="a")],
+                         issues=[Issue(number=7, title="b")])
+        ids = [p.card.task_id for p in plan(snap)]
+        self.assertIn("AEDL-W4A", ids)
+        self.assertIn("GH-PR-42", ids)
+        self.assertIn("GH-ISSUE-7", ids)
+        self.assertFalse(any("20" in i and "PR" not in i and "ISSUE" not in i for i in ids),
+                         "date-based IDs must be gone: %s" % ids)
+
+    def test_explicit_difficulty_preferred(self):
+        # A task with a declared difficulty must not fall back to heuristics.
+        snap = _snapshot()
+        snap.tasks[0].difficulty = 8
+        pts = plan(snap)
+        w4a = next(p for p in pts if "W4A" in p.card.title)
+        self.assertEqual(w4a.card.difficulty, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

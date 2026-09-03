@@ -133,6 +133,9 @@ python -m aew.cli plan <repo-path>
 # 打印某条任务的分发命令（dry-run，不真正执行）
 python -m aew.cli dispatch <repo-path> 1
 
+# 打印某条任务的 AECP Task Envelope（TaskCard → tasks/GH-N.yaml 桥接）
+python -m aew.cli envelope <repo-path> 1
+
 # 启动长期 Terminal Agent REPL
 python -m aew.cli agent <repo-path>
 
@@ -146,6 +149,7 @@ python -m aew.cli agent <repo-path> --github
 status | s          当前项目仪表盘
 tasks  | plan       列出计划任务（难度 + 推荐模型）
 show <n>            查看完整任务卡
+envelope <n>        生成 AECP Task Envelope（决策层 → 执行层桥接）
 dispatch <n> [tgt]  打印分发命令（dry-run）
 run <n> [tgt]       真正分发到 Worker Agent
 focus <text>        设置当前关注点（持久化）
@@ -195,11 +199,13 @@ Recommended:
 aew/
 ├── model.py        # v0 六字段 + v1 PR/Issue/CI/TaskCard/ResultCard 数据模型
 ├── deps.py         # parallel-ready（deterministic DAG）
+├── ids.py          # 稳定任务 ID（AEDL-W4A / GH-PR-42 / GH-ISSUE-37 / GH-CI-ref）
 ├── github.py       # v1 GitHub Loader（PR/Issue/CI/branch/release）
 ├── state.py        # v1 持久记忆（.aew/*.json）
-├── planner.py      # v1 任务规划 + 0-10 难度评级
+├── planner.py      # v1 任务规划 + 0-10 难度评级（显式难度优先）
 ├── router.py       # v1 模型路由 + 成本台账
 ├── dispatch.py     # v1 任务卡 → Worker Agent 命令
+├── envelope.py     # v2 TaskCard → AECP Task Envelope bridge
 ├── agent.py        # v1 长期 Terminal Agent REPL
 ├── hub_client.py   # v2 Local AEW ↔ Hub 客户端（读 AEW_HUB_* 环境变量）
 ├── hub/            # v2 Hub 服务端（SQLite + HTTP，纯 stdlib）
@@ -208,11 +214,11 @@ aew/
 │   ├── sync.py     #   稳定 ID 派生 + refresh（不覆盖 CLAIMED/DONE）
 │   ├── coordinator.py  # store + sync 胶水
 │   └── api.py      #   8 endpoint http.server + Bearer 认证
-├── cli.py          # python -m aew.cli [agent|plan|dispatch|hub] <repo>
+├── cli.py          # python -m aew.cli [agent|plan|dispatch|envelope|hub] <repo>
 ├── loaders/aedl.py # AEDL repo-native 读取器
 ├── examples/
 │   └── sample_project/   # 离线可跑的最小演示项目
-└── tests/          # 95 用例（v0 DAG + v1 全组件 + v2 Hub/store/api/e2e）
+└── tests/          # 111 用例（v0 DAG + v1 全组件 + v2 Hub/envelope/e2e）
 ```
 
 ---

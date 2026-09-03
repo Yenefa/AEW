@@ -92,5 +92,51 @@ class TestConventionDiscovery(unittest.TestCase):
             self.assertEqual({t.task_id for t in snap.tasks}, {"A1"})
 
 
+class TestDifficultyAndOwner(unittest.TestCase):
+    """P0: Owner is never a description; '难度：★★' becomes an explicit difficulty."""
+
+    def test_owner_separate_and_star_difficulty(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "WAVE4_TASKS.md").write_text(
+                "| 任务 | GitHub | 真人 Owner | 当前状态 |\n"
+                "| --- | --- | --- | --- |\n"
+                "| W4A | Issue #2 | `Yenefa` | claimed |\n"
+                "\n"
+                "## TASK-W4A：证据冻结（Issue #2）\n"
+                "- 难度：★★（取证）\n"
+                "- 领地：`docs/`、`src/`\n",
+                encoding="utf-8",
+            )
+            snap = load_project(root)
+            w4a = {t.task_id: t for t in snap.tasks}["W4A"]
+            self.assertEqual(w4a.owner, "Yenefa")
+            self.assertNotIn("Yenefa", w4a.description)
+            self.assertEqual(w4a.difficulty, 4)          # ★★ → 4
+            self.assertIn("证据冻结", w4a.description)
+            self.assertIn("docs/", w4a.assets)
+
+    def test_heading_star_is_owner_type_not_difficulty(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "TASKS.md").write_text(
+                "## TASK-R1：渲染门禁（主线）⭐ 文本 AI\n"
+                "### 领地（可写）\n"
+                "- `tools/x.py`\n",
+                encoding="utf-8",
+            )
+            snap = load_project(root)
+            r1 = {t.task_id: t for t in snap.tasks}["R1"]
+            self.assertIsNone(r1.difficulty)             # ⭐ is an owner-type icon, not difficulty
+            self.assertEqual(r1.description, "渲染门禁（主线）")
+            self.assertIn("tools/x.py", r1.assets)
+
+
 if __name__ == "__main__":
     unittest.main()

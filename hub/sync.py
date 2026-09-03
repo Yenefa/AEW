@@ -15,28 +15,12 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List
 
+from ..ids import project_slug as _slug, stable_id as _stable_id
 from ..loaders.aedl import load_project
 from ..model import ProjectSnapshot
 from ..planner import _infer_flags, rate_difficulty
 from ..router import route
 from .models import BLOCKED, READY, TeamTask
-
-
-def _slug(name: str) -> str:
-    s = "".join(ch if ch.isalnum() else "-" for ch in (name or "")).strip("-")
-    return (s or "PROJ").upper()[:20]
-
-
-def _stable_id(project: str, source: str, key: str) -> str:
-    if source == "native":
-        return f"{_slug(project)}-{key}"
-    if source == "pr":
-        return f"GH-PR-{key}"
-    if source == "issue":
-        return f"GH-ISSUE-{key}"
-    if source == "ci":
-        return f"GH-CI-{key or 'default'}"
-    return f"TASK-{key}"
 
 
 def derive_candidates(snap: ProjectSnapshot) -> List[TeamTask]:

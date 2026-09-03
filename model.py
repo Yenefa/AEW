@@ -19,7 +19,7 @@ It only reads existing project truth sources and projects a unified view.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -36,6 +36,8 @@ class Task:
     description: str = ""
     dependencies: List[str] = field(default_factory=list)
     assets: List[str] = field(default_factory=list)
+    difficulty: Optional[int] = None   # explicit difficulty (0-10) declared by the project; None = undeclared
+    owner: str = ""                    # human/GitHub owner; NEVER a description
 
 
 @dataclass
@@ -125,6 +127,9 @@ class TaskCard:
     difficulty: int = 0            # 0-10
     recommended_model: str = ""
     acceptance: List[str] = field(default_factory=list)
+    # AECP-facing fields (Task Envelope alignment):
+    dependencies: List[str] = field(default_factory=list)      # refs to other tasks (e.g. GH-9)
+    forbidden_paths: List[str] = field(default_factory=list)   # scope blacklist
 
     def render(self) -> str:
         L: List[str] = []

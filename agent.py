@@ -161,6 +161,9 @@ class TerminalAgent:
         if c in ("recover", "r", "memory"):
             return "Memory: " + self.memory.recovery_summary()
 
+        if c in ("envelope", "env"):
+            return self._envelope(args)
+
         if c in ("team",):
             return self._team()
 
@@ -208,6 +211,17 @@ class TerminalAgent:
         if idx is None:
             return "usage: show <n>"
         return self.plan[idx].card.render()
+
+    def _envelope(self, args: List[str]) -> str:
+        """Render an AECP Task Envelope for a planned task (TaskCard → Envelope)."""
+        from .envelope import build_envelope
+        idx = self._parse_index(args)
+        if idx is None:
+            return "usage: envelope <n>"
+        card = self.plan[idx].card
+        if not card.recommended_model:
+            route_card(card, self.pool)
+        return build_envelope(card, self.repo)
 
     def _dispatch(self, args: List[str], dry_run: bool) -> str:
         idx = self._parse_index(args)
@@ -387,6 +401,7 @@ class TerminalAgent:
             "  status | s           current project dashboard\n"
             "  tasks  | plan        list planned tasks (difficulty + model)\n"
             "  show <n>             full task card\n"
+            "  envelope <n>         AECP Task Envelope (TaskCard → tasks/GH-N.yaml)\n"
             "  dispatch <n> [tgt]   print the dispatch command (dry-run)\n"
             "  run <n> [tgt]        actually dispatch to a worker agent\n"
             "  focus <text>         set the current focus (persisted)\n"

@@ -21,6 +21,8 @@ _USAGE = (
     "  python -m aew.cli agent <repo-path> [--github]\n"
     "  python -m aew.cli plan <repo-path> [--github]\n"
     "  python -m aew.cli dispatch <repo-path> <n> [target] [--github]\n"
+    "  python -m aew.cli envelope <repo-path> <n>\n"
+    "  python -m aew.cli hub <repo-path> [--host 0.0.0.0] [--port 8765] [--db path]\n"
 )
 
 
@@ -76,6 +78,30 @@ def main(argv=None) -> int:
             print(_USAGE)
             return 2
         return run_agent(rest[0], github=_github_flag(rest))
+
+    if sub in ("envelope", "env"):
+        from .envelope import build_envelope
+        from .planner import plan
+        from .router import load_model_pool, route_card
+        if len(rest) < 2:
+            print("usage: python -m aew.cli envelope <repo-path> <n>")
+            return 2
+        repo = Path(rest[0])
+        try:
+            n = int(rest[1])
+        except ValueError:
+            print("usage: python -m aew.cli envelope <repo-path> <n>")
+            return 2
+        snap = load_project(repo, github=_github_flag(rest))
+        pool = load_model_pool(repo / "models.yaml")
+        planned = plan(snap)
+        if not (1 <= n <= len(planned)):
+            print(f"no task #{n} (have {len(planned)})")
+            return 1
+        card = planned[n - 1].card
+        route_card(card, pool)
+        print(build_envelope(card, repo))
+        return 0
 
     if sub in ("plan", "p"):
         from .planner import plan

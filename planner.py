@@ -11,10 +11,12 @@ after difficulty is computed.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import List, Optional
 
+from .ids import stable_id
 from .model import ProjectSnapshot, TaskCard
 
 
@@ -108,18 +110,19 @@ class PlannedTask:
         )
 
 
-def _task_id(project: str, seq: int) -> str:
-    slug = (project or "PROJ").upper().replace(" ", "-")[:12]
-    return f"{slug}-{date.today().strftime('%Y%m%d')}-{seq:03d}"
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", s).strip("-")[:24] or "item"
 
 
 def _make_card(
-    project: str, seq: int, title: str, objective: str,
+    task_id: str, project: str, title: str, objective: str,
     stage: str, files: List[str], constraints: List[str],
     difficulty: int, acceptance: List[str],
+    dependencies: Optional[List[str]] = None,
+    forbidden_paths: Optional[List[str]] = None,
 ) -> TaskCard:
     return TaskCard(
-        task_id=_task_id(project, seq),
+        task_id=task_id,
         title=title,
         objective=objective,
         project=project,
@@ -128,6 +131,8 @@ def _make_card(
         files=files,
         difficulty=difficulty,
         acceptance=acceptance,
+        dependencies=dependencies or [],
+        forbidden_paths=forbidden_paths or [],
     )
 
 
@@ -137,19 +142,14 @@ def _make_card(
 def plan(snapshot: ProjectSnapshot, focus: Optional[dict] = None) -> List[PlannedTask]:
     """Derive dispatchable tasks from snapshot signals, highest priority first."""
     out: List[PlannedTask] = []
-    project = snapshot.project.name
-    seq = 0
-
-    def next_seq() -> int:
-        nonlocal seq
-        seq += 1
-        return seq
+    project = snapshot.project.name or ""
 
     # 1. Failed CI blocks everything.
     if snapshot.ci.state in ("failure", "failing", "error", "timed_out"):
         out.append(PlannedTask(
             card=_make_card(
-                project, next_seq(), "Fix CI failure",
+                stable_id(project, "ci", snapshot.ci.ref or "default"),
+                project, "Fix CI failure",
                 f"Restore a green build on {snapshot.ci.ref or 'main'}.",
                 "CI", ["."], ["Do not merge while red"],
                 rate_difficulty(needs_verification=True),
@@ -167,7 +167,8 @@ def plan(snapshot: ProjectSnapshot, focus: Optional[dict] = None) -> List[Planne
             changed = pr.review_status == "CHANGES_REQUESTED"
             out.append(PlannedTask(
                 card=_make_card(
-                    project, next_seq(), f"Review PR #{pr.number}",
+                    stable_id(project, "pr", str(pr.number)),
+                    project, f"Review PR #{pr.number}",
                     f"Review {pr.title!r} and either approve or request changes.",
                     "Review", [f"PR #{pr.number}"],
                     ["Preserve existing ADR decisions"],
@@ -183,7 +184,8 @@ def plan(snapshot: ProjectSnapshot, focus: Optional[dict] = None) -> List[Planne
     for item in focus.get("unfinished_tasks", []):
         out.append(PlannedTask(
             card=_make_card(
-                project, next_seq(), f"Resume: {item}",
+                stable_id(project, "native", "resume-" + _slug(item)),
+                project, f"Resume: {item}",
                 f"Pick up unfinished thread '{item}' from last session.",
                 "Resume", [], [],
                 rate_difficulty(),
@@ -198,15 +200,21 @@ def plan(snapshot: ProjectSnapshot, focus: Optional[dict] = None) -> List[Planne
         if task.task_id in snapshot.parallel_ready:
             files, hardware, security, cross = _infer_flags(
                 task.description, task.assets)
+            difficulty = (
+                task.difficulty if task.difficulty is not None
+                else rate_difficulty(files_count=files, hardware=hardware,
+                                     security=security, cross_module=cross,
+                                     needs_verification=hardware)
+            )
             out.append(PlannedTask(
                 card=_make_card(
-                    project, next_seq(), f"Implement {task.task_id}",
+                    stable_id(project, "native", task.task_id),
+                    project, f"Implement {task.task_id}",
                     task.description or f"Advance {task.task_id} to DONE.",
                     "Build", task.assets or ["."], [],
-                    rate_difficulty(files_count=files, hardware=hardware,
-                                    security=security, cross_module=cross,
-                                    needs_verification=hardware),
+                    difficulty,
                     ["tests pass", "task marked DONE"],
+                    dependencies=task.dependencies,
                 ),
                 priority="Medium",
                 reason=f"{task.task_id} is parallel-ready",
@@ -217,7 +225,8 @@ def plan(snapshot: ProjectSnapshot, focus: Optional[dict] = None) -> List[Planne
         if issue.state == "open":
             out.append(PlannedTask(
                 card=_make_card(
-                    project, next_seq(), f"Triage issue #{issue.number}",
+                    stable_id(project, "issue", str(issue.number)),
+                    project, f"Triage issue #{issue.number}",
                     f"Read issue #{issue.number}: {issue.title}",
                     "Triage", [], [],
                     rate_difficulty(),
