@@ -5,6 +5,7 @@
 > - **v0 · Project Brain（冻结）**：从项目现有真源恢复身份、任务、事件、决策、资产、依赖，生成 Project Snapshot。**只读，不执行。**
 > - **v1 · Terminal Decision Layer（本仓库新增）**：一个长期运行的 Terminal Agent，把 Snapshot 转成**难度评级 + 模型路由 + 任务卡**，分发给任意 Worker Agent。**不直接实施工程变更；仅负责决策与显式授权后的 Worker 分发。**
 > - **v2 · AEW Hub（团队协调层，MVP）**：一个跑在服务器上的 SQLite+HTTP 服务，让**两个人**看到同一个团队任务看板、原子领取任务、再各自本地拆卡分发。
+> - **v2.1 · Promotion Authority**：run lease（一任务一 active run）+ generation 防 stale writer + 8 级状态阶梯（agent 天花板 = PROPOSED/PENDING_HUMAN_REVIEW）+ human approval receipt（人工 CLI 交互确认，刻意无 HTTP endpoint）+ promotion gate。**Agent may propose, but not promote 从原则变成机器约束。**
 
 > 一句话：**让 AI 工程团队拥有一个不会失忆的项目负责人。**
 
@@ -218,7 +219,7 @@ aew/
 ├── loaders/aedl.py # AEDL repo-native 读取器
 ├── examples/
 │   └── sample_project/   # 离线可跑的最小演示项目
-└── tests/          # 111 用例（v0 DAG + v1 全组件 + v2 Hub/envelope/e2e）
+└── tests/          # 129 用例（v0 DAG + v1 全组件 + v2 Hub/lease/promotion/e2e）
 ```
 
 ---
