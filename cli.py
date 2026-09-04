@@ -22,6 +22,7 @@ _USAGE = (
     "  python -m aew.cli plan <repo-path> [--github]\n"
     "  python -m aew.cli dispatch <repo-path> <n> [target] [--github]\n"
     "  python -m aew.cli envelope <repo-path> <n>\n"
+    "  python -m aew.cli approve <repo-path> <task-id> [--db path] [--user name]  # human-only\n"
     "  python -m aew.cli hub <repo-path> [--host 0.0.0.0] [--port 8765] [--db path]\n"
 )
 
@@ -63,6 +64,75 @@ def _run_hub(argv) -> int:
     return 0
 
 
+def _run_approve(argv) -> int:
+    """Human-only approval entry: python -m aew.cli approve <repo> <task_id>.
+
+    Runs on the Hub machine against the Hub's SQLite directly (never an HTTP
+    endpoint, so a worker subprocess cannot forge approval). Shows what is
+    being approved and requires an interactive [y/N] confirmation.
+    """
+    from .hub.models import TeamTask
+    from .hub.store import Store
+    import json
+    import os
+
+    if not argv:
+        print("usage: python -m aew.cli approve <repo-path> <task-id> "
+              "[--db path] [--user name] [--run run_id] [--yes]")
+        return 2
+    repo, task_id = Path(argv[0]), argv[1]
+    db, user, run_id, assume_yes = None, os.environ.get("AEW_USER", ""), "", False
+    i = 2
+    while i < len(argv):
+        if argv[i] == "--db" and i + 1 < len(argv):
+            db, i = argv[i + 1], i + 2
+        elif argv[i] == "--user" and i + 1 < len(argv):
+            user, i = argv[i + 1], i + 2
+        elif argv[i] == "--run" and i + 1 < len(argv):
+            run_id, i = argv[i + 1], i + 2
+        elif argv[i] == "--yes":
+            assume_yes, i = True, i + 1
+        else:
+            i += 1
+    db_path = Path(db) if db else (repo / ".aew" / "hub.sqlite3")
+    store = Store(db_path)
+    task = store.get_task(task_id)
+    if task is None:
+        print(f"task not found: {task_id}")
+        return 1
+    run_id = run_id or task.active_run_id
+    if not run_id:
+        print(f"no active run on {task_id}")
+        return 1
+    run = store.get_run(run_id) or {}
+    print(f"TASK:   {task.task_id}  [{task.status}]")
+    print(f"RUN:    {run_id}  (generation {task.generation}, worker {run.get('worker') or '?'})")
+    print(f"HEAD:   {task.head_sha or '(not reported)'}")
+    print(f"RESULT: {run.get('summary') or '(none)'}"
+          + (f" · gate {run['gate_status']}" if run.get("gate_status") else ""))
+    if assume_yes:
+        answer = "y"
+    else:
+        try:
+            answer = input("Approve promotion? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+    if answer != "y":
+        print("not approved (no receipt written)")
+        return 1
+    if not user:
+        print("missing approver identity: pass --user or set AEW_USER")
+        return 1
+    r = store.approve(task_id, run_id, approved_by=user)
+    if not r.get("ok"):
+        print(f"APPROVAL DENIED — {r.get('reason')}")
+        return 1
+    print(json.dumps(r["receipt"], ensure_ascii=False, indent=2))
+    print("\nNext: run your promotion gate, then `promote` to mark PROMOTED. "
+          "Actual git push / merge stays a human action.")
+    return 0
+
+
 def main(argv=None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:
@@ -78,6 +148,9 @@ def main(argv=None) -> int:
             print(_USAGE)
             return 2
         return run_agent(rest[0], github=_github_flag(rest))
+
+    if sub in ("approve",):
+        return _run_approve(rest)
 
     if sub in ("envelope", "env"):
         from .envelope import build_envelope

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional
+from uuid import uuid4
 
 from .dispatch import available_agents, dispatch
 from .loaders.aedl import load_project
@@ -182,6 +183,12 @@ class TerminalAgent:
         if c in ("sync",):
             return self._sync()
 
+        if c in ("lease",):
+            return self._lease(args)
+
+        if c in ("result",):
+            return self._result(args)
+
         if c in ("dispatch-team", "dt", "dm"):
             return self._dispatch_team(args, dry_run=True)
 
@@ -288,18 +295,22 @@ class TerminalAgent:
             tasks = hub.tasks()
         except Exception as e:
             return f"hub error: {e}"
-        groups = {"READY": [], "CLAIMED": [], "BLOCKED": [], "DONE": []}
+        groups = {"READY": [], "CLAIMED": [], "EXECUTING": [], "PROPOSED": [],
+                  "PENDING_HUMAN_REVIEW": [], "BLOCKED": [], "APPROVED": [],
+                  "PROMOTED": [], "DONE": []}
         for t in tasks:
             groups.setdefault(t.get("status", "READY"), []).append(t)
         L = [f"AEW Hub · {hub.url}"]
         if not tasks:
             L.append("  (no tasks — try 'sync')")
-        for st in ("READY", "CLAIMED", "BLOCKED", "DONE"):
+        for st in ("READY", "CLAIMED", "EXECUTING", "PROPOSED",
+                   "PENDING_HUMAN_REVIEW", "BLOCKED", "APPROVED", "PROMOTED", "DONE"):
             items = groups.get(st, [])
             L.append(f"\n{st}" + (f" ({len(items)})" if items else ""))
             for t in items:
-                owner = f"  · {t.get('owner')}" if t.get("owner") else ""
-                L.append(f"  {t.get('task_id', '?'):<14} {t.get('title', '')}{owner}")
+                run = f" · run {t.get('active_run_id', '')[:16]}" if t.get("active_run_id") else ""
+                owner = f" · {t.get('owner')}" if t.get("owner") else ""
+                L.append(f"  {t.get('task_id', '?'):<14} {t.get('title', '')}{owner}{run}")
         return "\n".join(L)
 
     def _mine(self) -> str:
@@ -372,6 +383,58 @@ class TerminalAgent:
         return (f"synced: {r.get('upserted', 0)} new/updated · "
                 f"{r.get('total', 0)} team tasks · project {r.get('project', '?')}")
 
+    def _lease(self, args: List[str]) -> str:
+        """Take the single active run for a team task (READY -> EXECUTING)."""
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        if not args:
+            return "usage: lease <task_id>"
+        run_id = f"run-{uuid4().hex[:12]}"
+        try:
+            r = hub.lease(args[0], run_id)
+        except Exception as e:
+            return f"hub error: {e}"
+        if r.get("ok"):
+            if not hasattr(self, "_leases"):
+                self._leases = {}
+            self._leases[args[0]] = run_id
+            return (f"LEASED ✓\n{r['task_id']} → run {r['run_id']} "
+                    f"(generation {r['generation']}) [{r['status']}]")
+        return f"LEASE DENIED — {r.get('reason')}"
+
+    def _result(self, args: List[str]) -> str:
+        """Submit the run's result (EXECUTING -> PROPOSED -> PENDING_HUMAN_REVIEW)."""
+        hub = self._hub_required()
+        if hub is None:
+            return self._hub_help()
+        if not args:
+            return "usage: result <task_id> [summary]"
+        task_id = args[0]
+        summary = " ".join(args[1:])
+        run_id = getattr(self, "_leases", {}).get(task_id, "")
+        if not run_id:
+            return f"no lease held for {task_id} — run 'lease {task_id}' first"
+        import subprocess
+        head_sha = ""
+        try:
+            head_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=str(self.repo),
+                capture_output=True, text=True, timeout=15).stdout.strip()
+        except Exception:
+            pass
+        try:
+            r = hub.submit_result(task_id, run_id, summary=summary, head_sha=head_sha)
+            if not r.get("ok"):
+                return f"RESULT DENIED — {r.get('reason')}"
+            r2 = hub.request_review(task_id, run_id)
+            status = r2.get("status") if r2.get("ok") else r.get("status")
+            return (f"RESULT SUBMITTED ✓\n{task_id} run {run_id} → [{status}]\n"
+                    f"head {head_sha[:12] or '(unknown)'}\n"
+                    f"next: human runs 'approve {task_id}' on the hub machine")
+        except Exception as e:
+            return f"hub error: {e}"
+
     def _dispatch_team(self, args: List[str], dry_run: bool) -> str:
         if not self.team_cards:
             return "no claimed tasks — run 'mine' first"
@@ -414,6 +477,8 @@ class TerminalAgent:
             "  release <id>         release a claimed task\n"
             "  done <id>            mark a claimed task DONE\n"
             "  sync                 refresh the hub from the repo\n"
+            "  lease <id>           take the active run (atomic; one run per task)\n"
+            "  result <id> [text]   submit run result (stale writes rejected)\n"
             "  dispatch-team <n>    dispatch a claimed team task (dry-run)\n"
             "  run-team <n> [tgt]   actually dispatch a claimed team task\n"
             "  quit                 save memory and exit"

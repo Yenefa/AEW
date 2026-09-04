@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aew"
-version = "2.0.0"
+version = "2.1.0"
 description = "AEW — Project Situational Awareness (v0) + Terminal Decision Layer (v1) + Team Hub (v2)"
 readme = "README.md"
 requires-python = ">=3.10"

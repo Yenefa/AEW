@@ -18,11 +18,18 @@ from typing import Dict
 from ..model import TaskCard
 
 READY = "READY"
-CLAIMED = "CLAIMED"
+CLAIMED = "CLAIMED"            # informal/personal mode (no run binding)
+EXECUTING = "EXECUTING"        # leased: exactly ONE active run owns promotion rights
 BLOCKED = "BLOCKED"
+PROPOSED = "PROPOSED"          # worker submitted a result (agent's ceiling starts here)
+PENDING_HUMAN_REVIEW = "PENDING_HUMAN_REVIEW"
+APPROVED = "APPROVED"          # human approval receipt bound to run+generation+head
+PROMOTED = "PROMOTED"          # promotion gate passed
 DONE = "DONE"
 
-STATES = (READY, CLAIMED, BLOCKED, DONE)
+AGENT_CEILING = (PROPOSED, PENDING_HUMAN_REVIEW)   # agents may never move past these
+STATES = (READY, CLAIMED, EXECUTING, BLOCKED, PROPOSED,
+          PENDING_HUMAN_REVIEW, APPROVED, PROMOTED, DONE)
 
 
 @dataclass
@@ -36,6 +43,12 @@ class TeamTask:
     recommended_model: str = ""
     created_at: str = ""
     updated_at: str = ""
+    # run ownership (v2.1) — one active run per task, generation bump per re-assignment
+    active_run_id: str = ""
+    generation: int = 1
+    lease_owner: str = ""
+    lease_expires_at: str = ""
+    head_sha: str = ""          # candidate HEAD reported by the active run
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)

@@ -72,3 +72,19 @@ class Coordinator:
             "status": t.status if t else "UNKNOWN",
             "message": msg,
         }
+
+    # -- run lease / promotion authority (v2.1) ----------------------------- #
+
+    def lease(self, task_id: str, run_id: str, worker: str = "",
+              ttl_seconds: int = 3600) -> Dict[str, object]:
+        return self.store.lease(task_id, run_id, worker, ttl_seconds)
+
+    def submit_result(self, task_id: str, run_id: str, summary: str = "",
+                      head_sha: str = "", gate_status: str = "") -> Dict[str, object]:
+        return self.store.submit_result(task_id, run_id, summary, head_sha, gate_status)
+
+    def request_review(self, task_id: str, run_id: str) -> Dict[str, object]:
+        return self.store.request_review(task_id, run_id)
+
+    def promote(self, task_id: str, run_id: str) -> Dict[str, object]:
+        return self.store.promote(task_id, run_id)

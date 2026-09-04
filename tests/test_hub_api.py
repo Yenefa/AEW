@@ -81,6 +81,31 @@ class TestApi(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertIn("counts", p)
 
+    def test_approve_is_never_an_endpoint(self):
+        # Human-only: approval must come from the Hub CLI with interactive
+        # confirm, never from an HTTP call a worker subprocess could make.
+        self._seed()
+        self._req("POST", "/tasks/AEDL-W4A/claim", {"user": "Maple"})
+        st, p = self._req("POST", "/tasks/AEDL-W4A/approve", {"user": "Maple"})
+        self.assertEqual(st, 403)
+        self.assertFalse(p["ok"])
+
+    def test_lease_and_promote_flow(self):
+        self._seed()
+        st, p = self._req("POST", "/tasks/AEDL-W4A/lease",
+                          {"run_id": "run-001", "worker": "maple"})
+        self.assertEqual(st, 200)
+        self.assertEqual(p["status"], "EXECUTING")
+        st, p = self._req("POST", "/tasks/AEDL-W4A/result",
+                          {"run_id": "run-001", "summary": "ok",
+                           "head_sha": "bf593f4", "gate_status": "pass"})
+        self.assertEqual(p["status"], "PROPOSED")
+        st, p = self._req("POST", "/tasks/AEDL-W4A/review", {"run_id": "run-001"})
+        self.assertEqual(p["status"], "PENDING_HUMAN_REVIEW")
+        st, p = self._req("POST", "/tasks/AEDL-W4A/promote", {"run_id": "run-001"})
+        self.assertEqual(st, 409)   # promotion gate: needs APPROVED first
+        self.assertIn("gate", p.get("reason", ""))
+
     def test_missing_user_rejected(self):
         self._seed()
         st, _ = self._req("POST", "/tasks/AEDL-W4A/claim", {})

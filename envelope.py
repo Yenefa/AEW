@@ -53,6 +53,43 @@ def _module_tops(paths: List[str]) -> List[str]:
     return sorted(tops)
 
 
+def discover_process_paths(
+    repo: Path, task_id: str, tasks_dir: str = "tasks"
+) -> List[str]:
+    """Control-plane artifacts that every task must be allowed to write.
+
+    Discovered by convention, never hard-coded to one project's layout — the
+    same rule the repo-native loader follows. Anything a project does not have
+    simply contributes nothing, so non-AEDL projects are unaffected.
+
+    Why this exists: the worker is required by the collaboration rules to write
+    the ledger and the handoff card, but an envelope holding only the task's
+    territory paths makes those writes FOREIGN — so `scope_check` fails on files
+    the task was *told* to produce. Leaving the fix to the worker means letting
+    an agent edit its own authorization, which is exactly what
+    "Agent cannot self-authorize" forbids. The control plane must emit them.
+
+    Recognised conventions:
+      - the envelope itself       : <tasks_dir>/<task_id>.yaml
+      - the handoff status card    : docs/HANDOFF.md (COLLABORATION §2)
+      - the AI usage ledger        : first docs/compliance/*LOG*.md
+    """
+    found: List[str] = []
+    env_rel = f"{tasks_dir}/{task_id}.yaml"
+    if (repo / env_rel).parent.is_dir():
+        found.append(env_rel)
+    for rel in ("docs/HANDOFF.md", "HANDOFF.md"):
+        if (repo / rel).is_file():
+            found.append(rel)
+            break
+    compliance = repo / "docs" / "compliance"
+    if compliance.is_dir():
+        logs = sorted(p for p in compliance.glob("*.md") if "LOG" in p.name.upper())
+        if logs:
+            found.append(logs[0].relative_to(repo).as_posix())
+    return found
+
+
 def build_envelope(
     card: TaskCard,
     repo: Path,
@@ -67,7 +104,12 @@ def build_envelope(
     base_sha = base_sha or current_head(repo)
     branch = branch or current_branch(repo)
     forbidden = forbidden_paths if forbidden_paths is not None else card.forbidden_paths
-    allowed = [p for p in (card.files or []) if p and p != "."]
+    territory = [p for p in (card.files or []) if p and p != "."]
+    process = [
+        p for p in discover_process_paths(repo, card.task_id)
+        if p not in territory
+    ]
+    allowed = territory + process
     tops = _module_tops(allowed)
 
     L: List[str] = []
@@ -97,8 +139,16 @@ def build_envelope(
     A("")
     A("allowed_paths:")
     if allowed:
-        for p in allowed:
-            A(f"  - {p}")
+        if territory:
+            A("  # territory — owned paths from the task card")
+            for p in territory:
+                A(f"  - {p}")
+        if process:
+            A("  # process artifacts — added by the control plane, because the")
+            A("  # collaboration rules *require* these writes while the task card")
+            A("  # does not own them. Never agent self-authorization.")
+            for p in process:
+                A(f"  - {p}")
     else:
         L[-1] = "allowed_paths: []"
     A("")
@@ -132,7 +182,7 @@ def build_envelope(
 
 def envelope_path(repo: Path, card: TaskCard, tasks_dir: str = "tasks") -> Path:
     """Where this card's envelope should live: <repo>/tasks/<task_id>.yaml."""
-    return repo / tasks_dir / f"{card.task_id}.yaml"
+    return Path(repo) / tasks_dir / f"{card.task_id}.yaml"
 
 
 def write_envelope(

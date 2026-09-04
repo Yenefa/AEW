@@ -73,6 +73,36 @@ class HubApp:
             if len(parts) == 3 and parts[0] == "tasks":
                 task_id, action = parts[1], parts[2]
                 user = str(payload.get("user", "")).strip()
+
+                # v2.1 run-lease machinery. NOTE: approve is deliberately NOT an
+                # endpoint — it is human-only via the Hub CLI with interactive
+                # confirmation, so a worker subprocess can never forge approval.
+                if action == "lease":
+                    run_id = str(payload.get("run_id", "")).strip()
+                    if not run_id:
+                        return 400, {"ok": False, "error": "missing run_id"}
+                    r = self.coord.lease(
+                        task_id, run_id, worker=str(payload.get("worker", user)),
+                        ttl_seconds=int(payload.get("ttl_seconds", 3600)))
+                    return (200 if r.get("ok") else 409), r
+                if action == "result":
+                    r = self.coord.submit_result(
+                        task_id, str(payload.get("run_id", "")),
+                        summary=str(payload.get("summary", "")),
+                        head_sha=str(payload.get("head_sha", "")),
+                        gate_status=str(payload.get("gate_status", "")))
+                    return (200 if r.get("ok") else 409), r
+                if action == "review":
+                    r = self.coord.request_review(task_id, str(payload.get("run_id", "")))
+                    return (200 if r.get("ok") else 409), r
+                if action == "promote":
+                    r = self.coord.promote(task_id, str(payload.get("run_id", "")))
+                    return (200 if r.get("ok") else 409), r
+                if action == "approve":
+                    return 403, {"ok": False,
+                                 "error": "approve is human-only via the Hub CLI "
+                                          "(interactive confirm); never an endpoint"}
+
                 if not user:
                     return 400, {"ok": False, "error": "missing user"}
                 if action not in ("claim", "release", "done"):

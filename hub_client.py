@@ -112,5 +112,25 @@ class HubClient:
     def done(self, task_id: str, user: str = "") -> dict:
         return self._post(f"/tasks/{task_id}/done", {"user": user or self.user})
 
+    # -- run lease / promotion authority (v2.1; approve is CLI-only) -------- #
+
+    def lease(self, task_id: str, run_id: str, worker: str = "",
+              ttl_seconds: int = 3600) -> dict:
+        return self._post(f"/tasks/{task_id}/lease",
+                          {"run_id": run_id, "worker": worker or self.user,
+                           "ttl_seconds": ttl_seconds})
+
+    def submit_result(self, task_id: str, run_id: str, summary: str = "",
+                      head_sha: str = "", gate_status: str = "") -> dict:
+        return self._post(f"/tasks/{task_id}/result",
+                          {"run_id": run_id, "summary": summary,
+                           "head_sha": head_sha, "gate_status": gate_status})
+
+    def request_review(self, task_id: str, run_id: str) -> dict:
+        return self._post(f"/tasks/{task_id}/review", {"run_id": run_id})
+
+    def promote(self, task_id: str, run_id: str) -> dict:
+        return self._post(f"/tasks/{task_id}/promote", {"run_id": run_id})
+
     def my_cards(self, user: str = "") -> List[TaskCard]:
         return [team_task_to_card(TeamTask(**t)) for t in self.mine(user)]
